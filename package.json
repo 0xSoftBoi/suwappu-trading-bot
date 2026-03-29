@@ -1,1 +1,22 @@
-{"name":"suwappu-trading-bot","version":"1.0.0","type":"module","scripts":{"start":"npx tsx bot.ts"},"dependencies":{"tsx":"^4.0.0"},"license":"MIT"}
+{
+  "name": "suwappu-trading-bot",
+  "version": "1.0.0",
+  "description": "Automated price-target trading bot using Suwappu cross-chain DEX",
+  "type": "module",
+  "bin": { "suwappu-trading-bot": "src/cli.ts" },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "dev": "bun --watch src/cli.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@suwappu/sdk": "^0.4.0",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  },
+  "engines": { "node": ">=18" },
+  "license": "MIT"
+}

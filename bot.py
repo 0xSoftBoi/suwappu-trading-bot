@@ -1,61 +1,114 @@
 #!/usr/bin/env python3
 """Suwappu Trading Bot — monitors price and buys on dip."""
-import os, sys, time, requests
+import argparse
+import os
+import signal
+import sys
+import time
+
+import requests
 
 BASE_URL = "https://api.suwappu.bot/v1/agent"
-CHAIN, FROM_TOKEN, TO_TOKEN = "base", "USDC", "ETH"
-BUY_AMOUNT, PRICE_TARGET, POLL_INTERVAL, MAX_RETRIES = "100", 2000.0, 30, 3
+trades_count = 0
 
-def register():
-    r = requests.post(f"{BASE_URL}/register", json={"name": f"bot-{int(time.time())}"})
-    r.raise_for_status()
-    key = r.json()["agent"]["api_key"]
-    print(f"Registered. API key: {key[:20]}...")
-    return key
 
-def get_price(h, token):
-    r = requests.get(f"{BASE_URL}/prices", headers=h, params={"symbols": token})
+def require_env(name: str) -> str:
+    val = os.environ.get(name)
+    if not val:
+        print(f"Error: {name} not set", file=sys.stderr)
+        if name == "SUWAPPU_API_KEY":
+            print('  Get one: curl -X POST https://api.suwappu.bot/v1/agent/register -H "Content-Type: application/json" -d \'{"name":"my-bot"}\'', file=sys.stderr)
+        sys.exit(1)
+    return val
+
+
+def get_price(headers: dict, token: str) -> float:
+    r = requests.get(f"{BASE_URL}/prices", headers=headers, params={"symbols": token})
     r.raise_for_status()
     return float(r.json().get("prices", {}).get(token, {}).get("usd", 0))
 
-def swap(h, fr, to, amt, chain):
-    q = requests.post(f"{BASE_URL}/quote", headers=h, json={"from_token": fr, "to_token": to, "amount": amt, "chain": chain})
-    q.raise_for_status(); qd = q.json()
-    print(f"Quote: {amt} {fr} -> {qd.get('amount_out','?')} {to}")
-    s = requests.post(f"{BASE_URL}/swap/execute", headers=h, json={"quote_id": qd["quote_id"]})
-    s.raise_for_status(); return s.json()["swap_id"]
 
-def wait(h, sid):
-    while True:
-        r = requests.get(f"{BASE_URL}/swap/status/{sid}", headers=h).json()
-        print(f"  {r['status']}")
-        if r["status"] in ("completed", "failed"): return r["status"] == "completed"
-        time.sleep(5)
+def get_quote(headers: dict, from_t: str, to_t: str, amount: str, chain: str) -> dict:
+    r = requests.post(f"{BASE_URL}/quote", headers=headers,
+                       json={"from_token": from_t, "to_token": to_t, "amount": amount, "chain": chain})
+    r.raise_for_status()
+    return r.json()
+
+
+def execute_swap(headers: dict, quote_id: str) -> dict:
+    r = requests.post(f"{BASE_URL}/swap/execute", headers=headers, json={"quote_id": quote_id})
+    r.raise_for_status()
+    return r.json()
+
+
+def shutdown(sig, frame):
+    print(f"\nStopped. {trades_count} trades executed.")
+    sys.exit(0)
+
 
 def main():
-    key = os.environ.get("SUWAPPU_API_KEY") or register()
-    h = {"Authorization": f"Bearer {key}"}
-    w = requests.get(f"{BASE_URL}/wallets", headers=h).json()
-    if not w.get("wallets"):
-        ww = requests.post(f"{BASE_URL}/wallets", headers=h).json()["wallet"]
-        print(f"Fund {ww['address']} with {FROM_TOKEN} on {CHAIN}, then restart."); sys.exit(0)
-    print(f"Wallet: {w['wallets'][0]['address']}\nMonitoring {TO_TOKEN} < ${PRICE_TARGET}. Ctrl+C to stop.\n")
+    global trades_count
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    parser = argparse.ArgumentParser(description="Suwappu Trading Bot — buy on price dip")
+    parser.add_argument("--chain", default="base", help="chain to trade on (default: base)")
+    parser.add_argument("--from-token", default="USDC", dest="from_token", help="token to spend (default: USDC)")
+    parser.add_argument("--to-token", default="ETH", dest="to_token", help="token to buy (default: ETH)")
+    parser.add_argument("--amount", default="100", help="amount per trade (default: 100)")
+    parser.add_argument("--target", type=float, default=2000, help="buy below this price (default: 2000)")
+    parser.add_argument("--interval", type=int, default=30, help="poll interval seconds (default: 30)")
+    parser.add_argument("--dry-run", action="store_true", help="quote only, don't execute")
+    parser.add_argument("--json", action="store_true", help="output as JSON")
+    parser.add_argument("--max-retries", type=int, default=5, help="max errors before exit (default: 5)")
+    args = parser.parse_args()
+
+    api_key = require_env("SUWAPPU_API_KEY")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    print(f"Suwappu Trading Bot")
+    print(f"  Chain: {args.chain} | Buy: {args.amount} {args.from_token} → {args.to_token}")
+    print(f"  Target: < ${args.target} | Interval: {args.interval}s")
+    if args.dry_run:
+        print("  Mode: DRY RUN (quotes only)")
+    print()
+
     retries = 0
     while True:
         try:
-            p = get_price(h, TO_TOKEN)
-            if p < PRICE_TARGET:
-                print(f"{TO_TOKEN}: ${p:.2f} -- BUYING!")
-                wait(h, swap(h, FROM_TOKEN, TO_TOKEN, BUY_AMOUNT, CHAIN))
+            price = get_price(headers, args.to_token)
+            if args.json:
+                import json
+                print(json.dumps({"token": args.to_token, "price": price, "target": args.target, "action": "buy" if price < args.target else "wait"}))
+            elif price < args.target:
+                print(f"{args.to_token}: ${price:.2f} < ${args.target} — {'WOULD BUY' if args.dry_run else 'BUYING'}!")
+                q = get_quote(headers, args.from_token, args.to_token, args.amount, args.chain)
+                print(f"  Quote: {args.amount} {args.from_token} → {q.get('amount_out', '?')} {args.to_token}")
+                if not args.dry_run:
+                    s = execute_swap(headers, q["quote_id"])
+                    print(f"  Swap: {s.get('status', 'submitted')}")
+                    trades_count += 1
             else:
-                print(f"{TO_TOKEN}: ${p:.2f} (target: <${PRICE_TARGET})")
+                print(f"{args.to_token}: ${price:.2f} (target: < ${args.target})")
             retries = 0
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:
-                retries += 1; time.sleep(min(60, POLL_INTERVAL * retries))
-                if retries >= MAX_RETRIES: sys.exit(1); continue
-            if (retries := retries + 1) >= MAX_RETRIES: sys.exit(1)
-        except KeyboardInterrupt: print("\nStopped."); sys.exit(0)
-        time.sleep(POLL_INTERVAL)
+            if e.response is not None and e.response.status_code == 429:
+                retries += 1
+                wait = min(120, args.interval * retries)
+                print(f"Rate limited. Waiting {wait}s... ({retries}/{args.max_retries})", file=sys.stderr)
+                time.sleep(wait)
+                if retries >= args.max_retries:
+                    sys.exit(1)
+                continue
+            print(f"Error: {e}", file=sys.stderr)
+            if (retries := retries + 1) >= args.max_retries:
+                sys.exit(1)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            if (retries := retries + 1) >= args.max_retries:
+                sys.exit(1)
+        time.sleep(args.interval)
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
