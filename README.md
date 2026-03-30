@@ -76,6 +76,34 @@ docker compose logs -f
 | `--json` | off | JSON output (one line per check) |
 | `--max-retries` | `5` | Max consecutive errors before exit |
 
+## Example Output
+
+```
+$ bun run src/cli.ts --to ETH --target 2000 --dry-run
+
+Suwappu Trading Bot
+  Chain: base | Buy: 100 USDC → ETH
+  Target: < $2000 | Interval: 30s
+  Mode: DRY RUN (quotes only, no execution)
+
+ETH: $2,003.05 (target: < $2000)
+ETH: $1,995.88 < $2000 — WOULD BUY!
+  Quote: 100 USDC → 0.0501 ETH (via Li.Fi)
+ETH: $2,001.42 (target: < $2000)
+ETH: $1,998.10 < $2000 — WOULD BUY!
+  Quote: 100 USDC → 0.0500 ETH (via Li.Fi)
+^C
+Stopped. 0 trades executed.
+```
+
+JSON mode:
+```
+$ bun run src/cli.ts --json | head -3
+{"token":"ETH","price":2003.05,"target":2000,"action":"wait"}
+{"token":"ETH","price":1995.88,"target":2000,"action":"buy"}
+{"token":"ETH","price":2001.42,"target":2000,"action":"wait"}
+```
+
 ## How It Works
 
 1. Validates API key and tests connection
