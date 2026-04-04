@@ -63,6 +63,15 @@ def main():
     parser.add_argument("--max-retries", type=int, default=5, help="max errors before exit (default: 5)")
     args = parser.parse_args()
 
+    MAX_AMOUNT = float(os.environ.get("SUWAPPU_MAX_TRADE_USD", "1000"))
+    if float(args.amount) > MAX_AMOUNT:
+        print(f"Error: amount {args.amount} exceeds max allowed {MAX_AMOUNT}. Set SUWAPPU_MAX_TRADE_USD to override.")
+        sys.exit(1)
+
+    if args.interval < 10:
+        print("Error: --interval must be at least 10 seconds")
+        sys.exit(1)
+
     api_key = require_env("SUWAPPU_API_KEY")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -72,6 +81,9 @@ def main():
     if args.dry_run:
         print("  Mode: DRY RUN (quotes only)")
     print()
+
+    MAX_DAILY_LOSS = float(os.environ.get("SUWAPPU_MAX_DAILY_LOSS_USD", "500"))
+    daily_loss = 0.0
 
     retries = 0
     while True:
@@ -88,6 +100,12 @@ def main():
                     s = execute_swap(headers, q["quote_id"])
                     print(f"  Swap: {s.get('status', 'submitted')}")
                     trades_count += 1
+                    loss = float(s.get("value_lost_usd", 0))
+                    if loss > 0:
+                        daily_loss += loss
+                    if daily_loss > MAX_DAILY_LOSS:
+                        print(f"Circuit breaker: daily loss ${daily_loss:.2f} exceeds limit ${MAX_DAILY_LOSS:.2f}. Stopping.")
+                        sys.exit(1)
             else:
                 print(f"{args.to_token}: ${price:.2f} (target: < ${args.target})")
             retries = 0
