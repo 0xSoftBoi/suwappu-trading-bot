@@ -91,18 +91,17 @@ def get_quote(
     to_token: str,
     amount: str,
     chain: str,
+    wallet_address: str | None = None,
 ) -> dict[str, Any]:
-    return request_json(
-        "POST",
-        "/quote",
-        headers,
-        payload={
-            "from_token": from_token,
-            "to_token": to_token,
-            "amount": amount,
-            "chain": chain,
-        },
-    )
+    payload: dict[str, Any] = {
+        "from_token": from_token,
+        "to_token": to_token,
+        "amount": amount,
+        "chain": chain,
+    }
+    if wallet_address:
+        payload["wallet_address"] = wallet_address
+    return request_json("POST", "/quote", headers, payload=payload)
 
 
 def simulate_swap(
@@ -287,6 +286,7 @@ def main() -> None:
                 args.to_token,
                 args.amount,
                 args.chain,
+                wallet_address if args.execute else None,
             )
             quote_id = str(quote.get("quote_id") or "")
             if not quote_id:
