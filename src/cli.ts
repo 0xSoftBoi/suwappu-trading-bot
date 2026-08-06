@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { createClient } from "@suwappu/sdk";
+
 import {
   executeManagedSwap,
   getPrice,
+  getQuote,
   simulateSwap,
 } from "./suwappu.js";
 import {
@@ -65,10 +66,6 @@ async function runBot(opts: BotOptions): Promise<void> {
     allowManagedExecution: process.env.SUWAPPU_ALLOW_MANAGED_EXECUTION,
     walletAddress: process.env.SUWAPPU_WALLET_ADDRESS,
   });
-  const client = createClient({ apiKey });
-
-  await client.listChains();
-
   if (!opts.json) {
     console.log("Suwappu Trading Bot");
     console.log(`  Chain: ${opts.chain} | Buy: ${opts.amount} ${opts.from} → ${opts.to}`);
@@ -114,12 +111,13 @@ async function runBot(opts: BotOptions): Promise<void> {
         continue;
       }
 
-      const quote = await client.getQuote(
-        opts.from,
-        opts.to,
-        Number(opts.amount),
-        opts.chain,
-      );
+      const quote = await getQuote(apiKey, {
+        from: opts.from,
+        to: opts.to,
+        amount: opts.amount,
+        chain: opts.chain,
+        walletAddress: mode.kind === "managed" ? mode.walletAddress : undefined,
+      });
       if (!quote.id) throw new Error("Suwappu returned a quote without an id");
 
       if (mode.kind === "preview") {
