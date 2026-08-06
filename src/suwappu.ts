@@ -1,5 +1,12 @@
 const API_BASE_URL = (process.env.SUWAPPU_API_URL ?? "https://api.suwappu.bot").replace(/\/$/, "");
 
+export interface CurrentQuote {
+  id: string;
+  toAmount: string;
+  dex: string;
+  expiresInSeconds?: number;
+}
+
 export interface SwapSimulation {
   success?: boolean;
   reason?: string;
@@ -72,6 +79,45 @@ export async function getPrice(
     { params: { symbols: symbol, chain } },
   );
   return parseUsdPrice(payload, symbol);
+}
+
+export async function getQuote(
+  apiKey: string,
+  args: {
+    from: string;
+    to: string;
+    amount: string;
+    chain: string;
+    walletAddress?: string;
+  },
+): Promise<CurrentQuote> {
+  const payload = await request<{
+    quote_id?: string;
+    amount_out?: string | number;
+    dex?: string;
+    expires_in_seconds?: number;
+  }>(apiKey, "POST", "/v1/agent/quote", {
+    json: {
+      from_token: args.from,
+      to_token: args.to,
+      amount: args.amount,
+      chain: args.chain,
+      wallet_address: args.walletAddress,
+    },
+  });
+
+  if (!payload.quote_id || payload.amount_out === undefined) {
+    throw new Error("Malformed quote response");
+  }
+
+  return {
+    id: payload.quote_id,
+    toAmount: String(payload.amount_out),
+    dex: String(payload.dex ?? ""),
+    ...(typeof payload.expires_in_seconds === "number"
+      ? { expiresInSeconds: payload.expires_in_seconds }
+      : {}),
+  };
 }
 
 export function simulateSwap(
