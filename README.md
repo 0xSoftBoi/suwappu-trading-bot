@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 
-Automated trading bot that monitors token prices and executes swaps when targets are hit. Uses the [Suwappu](https://suwappu.bot) cross-chain DEX API with 15+ chains and 9 swap providers.
+Automated trading bot that monitors token prices and executes swaps when targets are hit. Uses the [Suwappu](https://suwappu.bot) cross-chain DEX API with 14 chains and 15+ swap providers.
 
 > **Warning**: This bot executes real trades on real blockchains. Use test wallets and small amounts until you're confident in your configuration. This is not financial advice.
 
