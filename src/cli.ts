@@ -149,8 +149,8 @@ async function runBot(opts: BotOptions): Promise<void> {
         }
       } else {
         const simulation = await simulateSwap(apiKey, quote.id, mode.walletAddress);
-        if (simulation.success === false) {
-          throw new Error(`Swap simulation failed: ${simulation.reason ?? "unknown reason"}`);
+        if (simulation.success !== true) {
+          throw new Error(`Swap simulation failed: ${simulation.reason ?? "no success response"}`);
         }
 
         const swap = await executeManagedSwap(apiKey, quote.id);
