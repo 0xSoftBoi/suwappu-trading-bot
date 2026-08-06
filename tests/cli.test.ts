@@ -1,108 +1,96 @@
-import { describe, it, expect } from "bun:test";
-
-// Helper: simulate the buy signal logic from src/cli.ts
-function shouldBuy(price: number, target: number): boolean {
-  return price < target;
-}
-
-// Helper: simulate JSON output format
-function formatJsonOutput(token: string, price: number, target: number) {
-  return {
-    token,
-    price,
-    target,
-    action: price < target ? "buy" : "wait",
-  };
-}
-
-// Helper: simulate retry wait calculation
-function retryWait(interval: number, retries: number, maxWait = 120): number {
-  return Math.min(maxWait, interval * retries);
-}
+import { describe, expect, it } from "bun:test";
+import { parseUsdPrice } from "../src/suwappu.js";
+import {
+  resolveExecutionMode,
+  retryWait,
+  shouldBuy,
+} from "../src/strategy.js";
 
 describe("buy signal detection", () => {
-  it("should buy when price is below target", () => {
+  it("triggers only for a valid positive price below target", () => {
     expect(shouldBuy(1950, 2000)).toBe(true);
-  });
-
-  it("should not buy when price equals target", () => {
     expect(shouldBuy(2000, 2000)).toBe(false);
-  });
-
-  it("should not buy when price is above target", () => {
     expect(shouldBuy(2100, 2000)).toBe(false);
   });
 
-  it("should buy when price is zero (edge case)", () => {
-    expect(shouldBuy(0, 2000)).toBe(true);
-  });
-
-  it("should handle very small price differences", () => {
-    expect(shouldBuy(1999.99, 2000)).toBe(true);
-    expect(shouldBuy(2000.01, 2000)).toBe(false);
+  it("never interprets a missing/zero price as a buy signal", () => {
+    expect(shouldBuy(0, 2000)).toBe(false);
+    expect(shouldBuy(Number.NaN, 2000)).toBe(false);
   });
 });
 
-describe("JSON output format", () => {
-  it("should include all required fields", () => {
-    const output = formatJsonOutput("ETH", 1950, 2000);
-    expect(output).toHaveProperty("token");
-    expect(output).toHaveProperty("price");
-    expect(output).toHaveProperty("target");
-    expect(output).toHaveProperty("action");
+describe("current Suwappu price response", () => {
+  it("parses the requested symbol case-insensitively", () => {
+    expect(parseUsdPrice({ prices: { ETH: { usd: "1995.88" } } }, "eth")).toBe(1995.88);
   });
 
-  it("should set action to 'buy' when below target", () => {
-    const output = formatJsonOutput("ETH", 1950, 2000);
-    expect(output.action).toBe("buy");
+  it("rejects missing and non-positive prices", () => {
+    expect(() => parseUsdPrice({ prices: {} }, "ETH")).toThrow("No valid USD price");
+    expect(() => parseUsdPrice({ prices: { ETH: { usd: 0 } } }, "ETH")).toThrow(
+      "No valid USD price",
+    );
+  });
+});
+
+describe("managed execution gate", () => {
+  it("defaults to preview even when credentials happen to exist", () => {
+    expect(
+      resolveExecutionMode({
+        execute: false,
+        dryRun: false,
+        allowManagedExecution: "1",
+        walletAddress: "0xabc",
+      }),
+    ).toEqual({ kind: "preview" });
   });
 
-  it("should set action to 'wait' when above target", () => {
-    const output = formatJsonOutput("ETH", 2100, 2000);
-    expect(output.action).toBe("wait");
+  it("requires an independent environment opt-in", () => {
+    expect(() =>
+      resolveExecutionMode({
+        execute: true,
+        dryRun: false,
+        walletAddress: "0xabc",
+      }),
+    ).toThrow("SUWAPPU_ALLOW_MANAGED_EXECUTION=1");
   });
 
-  it("should preserve token symbol", () => {
-    const output = formatJsonOutput("SOL", 80, 100);
-    expect(output.token).toBe("SOL");
+  it("requires a wallet address so live routes can be simulated first", () => {
+    expect(() =>
+      resolveExecutionMode({
+        execute: true,
+        dryRun: false,
+        allowManagedExecution: "1",
+      }),
+    ).toThrow("SUWAPPU_WALLET_ADDRESS");
   });
 
-  it("should be valid JSON when stringified", () => {
-    const output = formatJsonOutput("ETH", 1950, 2000);
-    const parsed = JSON.parse(JSON.stringify(output));
-    expect(parsed.token).toBe("ETH");
-    expect(parsed.price).toBe(1950);
+  it("enables managed mode only when both gates are present", () => {
+    expect(
+      resolveExecutionMode({
+        execute: true,
+        dryRun: false,
+        allowManagedExecution: "1",
+        walletAddress: "0xabc",
+      }),
+    ).toEqual({ kind: "managed", walletAddress: "0xabc" });
+  });
+
+  it("rejects conflicting execute and legacy dry-run flags", () => {
+    expect(() =>
+      resolveExecutionMode({
+        execute: true,
+        dryRun: true,
+        allowManagedExecution: "1",
+        walletAddress: "0xabc",
+      }),
+    ).toThrow("--execute and --dry-run");
   });
 });
 
 describe("retry wait calculation", () => {
-  it("should increase wait with each retry", () => {
+  it("backs off linearly and caps at 120 seconds", () => {
     expect(retryWait(30, 1)).toBe(30);
-    expect(retryWait(30, 2)).toBe(60);
     expect(retryWait(30, 3)).toBe(90);
-  });
-
-  it("should cap at max wait time", () => {
-    expect(retryWait(30, 5)).toBe(120); // 150 capped to 120
-    expect(retryWait(30, 10)).toBe(120);
-  });
-
-  it("should handle zero retries", () => {
-    expect(retryWait(30, 0)).toBe(0);
-  });
-
-  it("should respect custom max wait", () => {
-    expect(retryWait(30, 3, 60)).toBe(60); // 90 capped to 60
-  });
-});
-
-describe("environment validation", () => {
-  it("should have SUWAPPU_API_KEY format", () => {
-    const key = "suwappu_sk_test123";
-    expect(key.startsWith("suwappu_sk_")).toBe(true);
-  });
-
-  it("should reject empty string as API key", () => {
-    expect("".length > 0).toBe(false);
+    expect(retryWait(30, 5)).toBe(120);
   });
 });
