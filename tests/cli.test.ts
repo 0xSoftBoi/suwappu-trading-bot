@@ -263,6 +263,17 @@ describe("managed execute contract", () => {
     process.env.SUWAPPU_OPERATION_TIMEOUT_MS = "99";
     expect(() => operationTimeoutMs()).toThrow("between 100 and 30000");
   });
+
+  it("does not misclassify invalid timeout configuration as a network failure", async () => {
+    process.env.SUWAPPU_OPERATION_TIMEOUT_MS = "99";
+    globalThis.fetch = (async () => {
+      throw new Error("fetch must not run");
+    }) as unknown as typeof fetch;
+
+    await expect(getReferencePrice("key", "ETH")).rejects.toThrow(
+      "SUWAPPU_OPERATION_TIMEOUT_MS must be between 100 and 30000 milliseconds",
+    );
+  });
 });
 
 describe("managed execution gate and backoff", () => {

@@ -150,6 +150,7 @@ async function request<T extends Record<string, unknown>>(
   const query = search.toString();
 
   const startedAt = performance.now();
+  const timeoutMs = operationTimeoutMs();
   let response: Response;
   let text: string;
   try {
@@ -161,7 +162,7 @@ async function request<T extends Record<string, unknown>>(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        signal: AbortSignal.timeout(operationTimeoutMs()),
+        signal: AbortSignal.timeout(timeoutMs),
         ...(options.json !== undefined
           ? { body: JSON.stringify(options.json) }
           : {}),
@@ -359,6 +360,7 @@ export async function executeManagedSwap(
   }
 
   const startedAt = performance.now();
+  const timeoutMs = operationTimeoutMs();
   let response: Response;
   let text: string;
   try {
@@ -370,7 +372,7 @@ export async function executeManagedSwap(
         "Idempotency-Key": idempotencyKey,
       },
       body: JSON.stringify({ quote_id: quoteId }),
-      signal: AbortSignal.timeout(operationTimeoutMs()),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     text = await response.text();
   } catch (error) {

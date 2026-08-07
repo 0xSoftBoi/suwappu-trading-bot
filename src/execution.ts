@@ -246,6 +246,8 @@ export class ExecutionLockError extends Error {
  * it cannot accidentally remove a replacement lock.
  */
 export function acquireExecutionLock(): () => void {
+  // Validate operator configuration before creating an ownership artifact.
+  journalLimit();
   ensureStateDir();
   const path = lockFile();
   const ownerToken = randomUUID();

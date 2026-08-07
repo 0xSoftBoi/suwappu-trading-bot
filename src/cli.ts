@@ -22,6 +22,7 @@ import {
 import {
   getQuote,
   getReferencePrice,
+  operationTimeoutMs,
   SuwappuRequestError,
   type CurrentQuote,
 } from "./suwappu.js";
@@ -192,6 +193,7 @@ function printIntent(intent: ExecutionIntent, json: boolean): void {
 async function runBot(opts: BotOptions): Promise<void> {
   const amountUsdc = validateOptions(opts);
   const apiKey = requireEnv("SUWAPPU_API_KEY");
+  operationTimeoutMs();
   const mode = resolveExecutionMode({
     execute: opts.execute,
     dryRun: opts.dryRun,

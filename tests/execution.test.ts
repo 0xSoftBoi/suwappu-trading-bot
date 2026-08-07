@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -285,6 +286,12 @@ describe("durable managed execution", () => {
 
     const releaseAgain = acquireExecutionLock();
     releaseAgain();
+  });
+
+  it("rejects invalid retention configuration before creating a lock", () => {
+    process.env.SUWAPPU_TRADING_BOT_JOURNAL_LIMIT = "0";
+    expect(() => acquireExecutionLock()).toThrow("between 1 and 100000");
+    expect(existsSync(join(stateDir, "execution.lock"))).toBe(false);
   });
 
   it("persists the journal and state directory with owner-only permissions", async () => {
