@@ -29,7 +29,7 @@ jobs:
       - name: Test
         run: bun test
 
-  python-syntax:
+  python-quality:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -39,3 +39,5 @@ jobs:
           python-version: "3.12"
       - name: Compile Python entrypoint
         run: python -m py_compile bot.py
+      - name: Test Python companion
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
