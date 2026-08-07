@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview-only Python companion for the Suwappu price-target reference."""
+"""Preview-only Python companion for the Suwappu Trading Bot."""
 from __future__ import annotations
 
 import argparse
@@ -17,18 +17,35 @@ from urllib.request import Request, urlopen
 
 DEFAULT_API_BASE_URL = "https://api.suwappu.bot"
 DEFAULT_MAX_TRADE_USDC = "1000"
-REQUEST_TIMEOUT = 30
+DEFAULT_OPERATION_TIMEOUT_MS = 25_000
 
 
 def api_base_url() -> str:
     return os.environ.get("SUWAPPU_API_URL", DEFAULT_API_BASE_URL).rstrip("/")
 
 
+def operation_timeout_seconds() -> float:
+    raw = os.environ.get(
+        "SUWAPPU_OPERATION_TIMEOUT_MS", str(DEFAULT_OPERATION_TIMEOUT_MS)
+    )
+    try:
+        milliseconds = float(raw)
+    except ValueError as error:
+        raise RuntimeError(
+            "SUWAPPU_OPERATION_TIMEOUT_MS must be between 100 and 30000 milliseconds"
+        ) from error
+    if not math.isfinite(milliseconds) or not 100 <= milliseconds <= 30_000:
+        raise RuntimeError(
+            "SUWAPPU_OPERATION_TIMEOUT_MS must be between 100 and 30000 milliseconds"
+        )
+    return milliseconds / 1000
+
+
 def require_env(name: str) -> str:
     value = os.environ.get(name)
-    if not value:
+    if not value or value != value.strip():
         raise RuntimeError(
-            f"{name} is not set"
+            f"{name} is missing/invalid"
             + (
                 "; register an agent at https://api.suwappu.bot/v1/agent/register"
                 if name == "SUWAPPU_API_KEY"
@@ -55,7 +72,7 @@ def request_json(
         headers=headers,
         method=method,
     )
-    with urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+    with urlopen(request, timeout=operation_timeout_seconds()) as response:
         data = json.loads(response.read().decode("utf-8"))
     if not isinstance(data, dict):
         raise RuntimeError(f"Malformed Suwappu response from {path}")
@@ -82,9 +99,19 @@ def optional_usd(value: Any) -> float | None:
     return parsed if math.isfinite(parsed) and parsed >= 0 else None
 
 
+def token_symbol(value: Any, field: str) -> str:
+    if isinstance(value, dict):
+        value = value.get("symbol")
+    if isinstance(value, str) and value.strip():
+        return value.strip().upper()
+    raise RuntimeError(f"Malformed Suwappu response: missing {field}")
+
+
 def get_reference_price(headers: dict[str, str], token: str) -> float:
     """Return the chain-neutral reference feed. It is never route liquidity."""
     data = request_json("GET", "/prices", headers, params={"symbols": token})
+    if data.get("success") is not True:
+        raise RuntimeError("Malformed prices response: missing success=true")
     prices = data.get("prices")
     if not isinstance(prices, dict):
         raise RuntimeError(f"No valid USD reference price returned for {token}")
@@ -138,6 +165,10 @@ def get_quote(
     quote_id = data.get("quote_id")
     if data.get("success") is not True or not isinstance(quote_id, str) or not quote_id:
         raise RuntimeError("Malformed quote response: missing success/quote_id")
+    returned_from = token_symbol(data.get("from_token"), "from_token")
+    returned_to = token_symbol(data.get("to_token"), "to_token")
+    if returned_from != from_token.strip().upper() or returned_to != to_token.strip().upper():
+        raise RuntimeError("Malformed quote response: returned token pair did not match request")
     amount_in = positive_number(data.get("amount_in"), "amount_in")
     amount_out = positive_number(data.get("amount_out"), "amount_out")
     amount_out_min = positive_number(data.get("amount_out_min"), "amount_out_min")
@@ -213,7 +244,7 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Preview-only Python companion for the Suwappu price-target reference"
+        description="Preview-only Python companion for the Suwappu Trading Bot"
     )
     parser.add_argument("--chain", default="base", help="chain to quote on (default: base)")
     parser.add_argument("--from-token", default="USDC", dest="from_token")
@@ -227,6 +258,7 @@ def main() -> None:
         help="unsupported fail-closed compatibility flag; managed execution is TypeScript-only",
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--once", action="store_true", help="run one preview evaluation and exit")
     parser.add_argument("--max-retries", type=int, default=5)
     args = parser.parse_args()
     amount_usdc = validate_args(parser, args)
@@ -309,20 +341,27 @@ def main() -> None:
                 else:
                     print(f"{args.to_token} reference passed, but route is ${route_price:.2f}/{args.to_token} — BLOCKED")
             retries = 0
+            if args.once:
+                break
         except HTTPError as error:
             retries += 1
             status = error.code
+            if args.once:
+                print(f"Error: Suwappu API error {status}", file=sys.stderr)
+                raise SystemExit(1) from error
             if status == 429 and retries < args.max_retries:
                 wait = min(120, args.interval * retries)
                 print(f"Rate limited. Waiting {wait}s... ({retries}/{args.max_retries})", file=sys.stderr)
                 time.sleep(wait)
                 continue
-            print(f"Error: {error}", file=sys.stderr)
+            print(f"Error: Suwappu API error {status}", file=sys.stderr)
             if retries >= args.max_retries:
                 raise SystemExit(1) from error
         except Exception as error:
             retries += 1
             print(f"Error: {error}", file=sys.stderr)
+            if args.once:
+                raise SystemExit(1) from error
             if retries >= args.max_retries:
                 raise SystemExit(1) from error
 

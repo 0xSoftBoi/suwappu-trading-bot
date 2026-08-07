@@ -24,6 +24,8 @@ The useful unit is not “a signal fired.” It is “the user got from intent t
 
 Do not jump straight to automation. A monitor can validate whether users care about the opportunity; an approval workflow can validate trust; only then does unattended execution deserve the operational burden.
 
+The maintained CLI is useful at all three stages, but it intentionally stays a **single-node Suwappu execution boundary**, not a general trading framework. That focus is part of the product: builders can copy a small, testable authority model without inheriting a strategy engine they do not need.
+
 ## Activation and retention
 
 A builder funnel can be measured without making trading-performance promises:
@@ -61,11 +63,30 @@ The normal request path in this reference is:
 
 Model your actual Suwappu plan, infrastructure, notification, support, and payment costs before setting a price. Reduce unnecessary polling or aggregate work across users where your architecture and API contract safely allow it.
 
+Put call/cost ceilings into each paid plan. A simple pricing worksheet for a monitor tier is:
+
+```text
+monthly API work per customer
+= price polls
++ route qualifications
++ simulations
++ managed submissions
++ reconciliation polls
+
+target gross contribution
+= plan revenue
+- Suwappu usage
+- compute/storage/notifications
+- payment/support/other variable costs
+```
+
+Do not optimize for raw request volume. The product metric is whether a user reaches a useful preview, decision, or reconciled outcome.
+
 ## Keep two economics ledgers
 
 Never present builder revenue as customer trading profit.
 
-For the business, track contribution margin separately:
+For the business, track contribution margin separately and at the **plan/customer cohort** level:
 
 ```text
 builder contribution margin
@@ -97,21 +118,23 @@ Test a price against the workflow you improve, for example:
 
 Do not invent a protocol “builder fee” unless the actual contract you use supports it. If your product charges users, make that product charge explicit in your own billing and economics.
 
+Reasonable fences are product capabilities rather than trading promises: saved targets/history, alert destinations, team approvals, audit retention, number of intentionally enabled automations, and support/SLA level. Never sell “higher returns” as a tier benefit unless you have a separately substantiated strategy product and the legal/compliance basis to make that claim.
+
 ## What to build next
 
 ### 1. Make the signal worth keeping
 
 The repo's reference price threshold is intentionally trivial. Before claiming strategy value, add evidence: historical evaluation, realistic costs, out-of-sample validation, and a dry-run period. Record why a decision happened so the user can evaluate it.
 
-For full strategy research, [Freqtrade](https://www.freqtrade.io/en/stable/strategy-101/) is a better benchmark than bloating this repo: it treats backtesting and dry-run as distinct validation stages and documents stop-loss/protection machinery.
+For full strategy research, [Freqtrade's backtesting documentation](https://www.freqtrade.io/en/stable/backtesting/) is a better benchmark than bloating this repo. Its docs explicitly distinguish backtesting from dry-run/live evidence, and it provides dedicated [lookahead analysis](https://www.freqtrade.io/en/stable/lookahead-analysis/) plus [protections](https://www.freqtrade.io/en/stable/plugins/). If strategy validation is your differentiator, use that class of tooling rather than calling one successful Suwappu trade “evidence.”
 
 ### 2. Add exits and risk as first-class state
 
-A buy trigger is not a strategy lifecycle. Real strategy software usually needs position state, exits, stop-loss or equivalent risk rules, sizing, portfolio constraints, and fee-aware accounting. If you need multi-order orchestration, [Hummingbot Strategy V2](https://hummingbot.org/strategies/v2-strategies/) is a useful architecture benchmark because Executors own finite order lifecycles.
+A buy trigger is not a strategy lifecycle. Real strategy software usually needs position state, exits, stop-loss or equivalent risk rules, sizing, portfolio constraints, and fee-aware accounting. If you need multi-order orchestration, [Hummingbot Strategy V2](https://hummingbot.org/strategies/v2-strategies/) is a useful architecture benchmark because its [Executors](https://hummingbot.org/strategies/v2-strategies/executors/) own finite order lifecycles.
 
 ### 3. Upgrade state before horizontal scale
 
-This reference uses an atomic local JSON journal and assumes one process owns it. Before multiple workers or replicas:
+Version 2 uses an exclusive local process lock plus an atomic, fsynced JSON journal with owner-only permissions. That gives one state directory one money-moving owner. It is deliberately **not** a distributed lock. Before multiple hosts or replicas:
 
 - move intents to transactional durable storage;
 - enforce uniqueness for idempotency/economic-action keys;
@@ -119,6 +142,8 @@ This reference uses an atomic local JSON journal and assumes one process owns it
 - preserve unresolved records indefinitely or with an explicit, audited resolution process;
 - make reconciliation a durable background job;
 - alert on stale `submitting` / `outcome_unknown` states.
+
+Keep the same fail-closed rule during migration: if old state cannot be proved complete and valid, do not create a new economic action.
 
 ### 4. Build permissions people can understand
 
@@ -138,6 +163,22 @@ Treat a submission response as a workflow state, not success. The durable produc
 - errors and operator resolution.
 
 That auditability is useful to users even when the trading signal itself is simple.
+
+## Enterprise graduation checklist
+
+Treat “enterprise” as an operating contract, not a logo. Before selling this as a managed multi-user service, add the pieces that belong outside this single-node repo:
+
+| Boundary | This repo provides | Multi-user service still needs |
+|---|---|---|
+| Financial authority | Preview default, two live gates, per-action cap, simulation | Tenant-scoped roles/approvals, aggregate/daily budgets, kill switch |
+| Duplicate safety | Durable economic intent, same-key retry, local single-writer lock | Transactional uniqueness + distributed serialization |
+| Outcome truth | `submitted` / `outcome_unknown` / terminal reconciliation | Durable reconciliation workers, alert ownership, incident queue |
+| Observability | JSON output + metadata-only API timing/outcome events | Central metrics/logs/traces with tenant-safe retention |
+| Release safety | Locked deps, tests/build/audit/container/CodeQL gates | Signed releases/SBOM/provenance according to your deployment policy |
+| Strategy evidence | No profitability claim | Backtests/evals, dry-run, risk/exits, model/version attribution if sold |
+| Business economics | Cost worksheet + product ladder | Per-plan metering, billing, support and measured contribution margin |
+
+The [operations runbook](docs/OPERATIONS.md) covers the boundary that *is* maintained here.
 
 ## A good first paid experiment
 

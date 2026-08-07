@@ -14,7 +14,7 @@ class PythonPreviewTests(unittest.TestCase):
 
         def fake_request(method, path, headers, *, params=None, payload=None):
             captured.update(method=method, path=path, params=params, payload=payload)
-            return {"prices": {"ETH": {"usd": "1995.88"}}}
+            return {"success": True, "prices": {"ETH": {"usd": "1995.88"}}}
 
         with patch.object(bot, "request_json", side_effect=fake_request):
             self.assertEqual(bot.get_reference_price({"Authorization": "Bearer x"}, "eth"), 1995.88)
@@ -57,6 +57,8 @@ class PythonPreviewTests(unittest.TestCase):
             return_value={
                 "success": True,
                 "quote_id": "q1",
+                "from_token": {"symbol": "USDC"},
+                "to_token": {"symbol": "ETH"},
                 "amount_in": "100",
                 "amount_out": "0.05",
                 "amount_out_min": "0.06",
@@ -66,6 +68,31 @@ class PythonPreviewTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "amount_out_min exceeds"):
                 bot.get_quote({}, "USDC", "ETH", "100", "base")
+
+    def test_quote_validation_rejects_returned_token_mismatch(self) -> None:
+        with patch.object(
+            bot,
+            "request_json",
+            return_value={
+                "success": True,
+                "quote_id": "q1",
+                "from_token": {"symbol": "USDC"},
+                "to_token": {"symbol": "SOL"},
+                "amount_in": "100",
+                "amount_out": "0.05",
+                "amount_out_min": "0.049",
+                "expires_in_seconds": 60,
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "token pair"):
+                bot.get_quote({}, "USDC", "ETH", "100", "base")
+
+    def test_operation_timeout_is_bounded(self) -> None:
+        with patch.dict("os.environ", {"SUWAPPU_OPERATION_TIMEOUT_MS": "2500"}):
+            self.assertEqual(bot.operation_timeout_seconds(), 2.5)
+        with patch.dict("os.environ", {"SUWAPPU_OPERATION_TIMEOUT_MS": "99"}):
+            with self.assertRaisesRegex(RuntimeError, "between 100 and 30000"):
+                bot.operation_timeout_seconds()
 
 
 if __name__ == "__main__":

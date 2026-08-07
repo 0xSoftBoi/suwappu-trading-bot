@@ -1,12 +1,18 @@
 export function shouldBuy(referencePrice: number, target: number): boolean {
-  return Number.isFinite(referencePrice)
-    && referencePrice > 0
-    && Number.isFinite(target)
-    && target > 0
-    && referencePrice < target;
+  return (
+    Number.isFinite(referencePrice) &&
+    referencePrice > 0 &&
+    Number.isFinite(target) &&
+    target > 0 &&
+    referencePrice < target
+  );
 }
 
-export function retryWait(interval: number, retries: number, maxWait = 120): number {
+export function retryWait(
+  interval: number,
+  retries: number,
+  maxWait = 120,
+): number {
   return Math.min(maxWait, interval * retries);
 }
 
@@ -29,13 +35,22 @@ export function resolveExecutionMode(options: {
       "Managed execution is locked. Set SUWAPPU_ALLOW_MANAGED_EXECUTION=1 as well as --execute.",
     );
   }
-  if (!options.walletAddress) {
-    throw new Error("SUWAPPU_WALLET_ADDRESS is required for managed execution.");
+  if (
+    !options.walletAddress ||
+    !options.walletAddress.trim() ||
+    options.walletAddress !== options.walletAddress.trim()
+  ) {
+    throw new Error(
+      "SUWAPPU_WALLET_ADDRESS is required for managed execution.",
+    );
   }
   return { kind: "managed", walletAddress: options.walletAddress };
 }
 
-export function requireUsdcTradeAmount(amountText: string, capText: string): number {
+export function requireUsdcTradeAmount(
+  amountText: string,
+  capText: string,
+): number {
   const amount = Number(amountText);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("--amount must be a positive USDC amount");
@@ -64,7 +79,9 @@ export function conservativeAcquisitionPrice(args: {
     throw new Error("Quote minimum output must be positive");
   }
   if (!Number.isFinite(args.estimatedGasUsd) || args.estimatedGasUsd < 0) {
-    throw new Error("Quote must include a non-negative estimated gas USD value");
+    throw new Error(
+      "Quote must include a non-negative estimated gas USD value",
+    );
   }
   return (args.inputUsdc + args.estimatedGasUsd) / args.minimumOutput;
 }
