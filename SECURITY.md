@@ -18,8 +18,9 @@ Changes to managed execution should preserve all of these properties:
 - `/swap/simulate` must explicitly return `would_execute: true`;
 - an intent and idempotency key are durable before submission becomes ambiguous;
 - retries for the same economic action reuse that idempotency key;
-- network/timeout/5xx ambiguity is recorded as `outcome_unknown`, not assumed failure;
+- network/timeout/HTTP 408/5xx or malformed-2xx ambiguity is recorded as `outcome_unknown`, not assumed failure;
 - a known swap ID is reconciled before a new economic action is allowed;
+- one local state directory has one managed/reconciliation owner through an exclusive lock;
 - `--max-trades` counts terminal success, not request submissions;
 - client-side caps supplement, rather than replace, server-side wallet policies.
 
@@ -27,11 +28,18 @@ Regression tests should accompany any change to these invariants.
 
 ## Protect the execution journal
 
-By default the TypeScript bot stores `execution-journal.json` under `~/.suwappu-trading-bot`; Docker Compose uses a persistent named volume. The journal is part of the safety boundary: deleting an unresolved idempotency key can turn recovery into a second economic action.
+By default the TypeScript bot stores `execution-journal.json` under `~/.suwappu-trading-bot`; Docker Compose uses a persistent named volume. The journal is part of the safety boundary: deleting an unresolved idempotency key can turn recovery into a second economic action. The state directory is forced to mode `0700`, journal/lock files to `0600`, and journal replacement is atomic after a file `fsync`.
 
-The local journal implementation assumes one writer. Do not point multiple replicas at the same JSON file. Use transactional storage and concurrency controls before horizontal scaling.
+Managed mode and `executions --reconcile` acquire `execution.lock` exclusively. A stale lock is intentionally **not** auto-deleted: prove the recorded process is gone before clearing it. Do not point multiple hosts/replicas at the same JSON directory; a local lock is not distributed consensus. Use transactional storage and concurrency controls before horizontal scaling.
 
 Back up or otherwise durably retain unresolved `submitting`, `submitted`, and `outcome_unknown` records. `executions --reconcile` is safe to automate because it polls known swap IDs only and never submits.
+
+## Network and telemetry boundary
+
+- Every Suwappu operation has a bounded deadline (`SUWAPPU_OPERATION_TIMEOUT_MS`, default 25 seconds, maximum 30 seconds).
+- Upstream HTTP response bodies are not copied into thrown/logged request errors by the TypeScript adapter or Python preview loop.
+- Optional `SUWAPPU_API_EVENTS` telemetry contains only operation, transport/protocol outcome, duration, and HTTP status. It excludes credentials, wallet/market terms, quote/swap IDs, response bodies, and error text.
+- Metadata events do not prove transaction success. Terminal managed outcomes still come from reconciliation.
 
 ## Credentials and wallets
 
@@ -43,6 +51,6 @@ Back up or otherwise durably retain unresolved `submitting`, `submitted`, and `o
 
 ## Coordinated disclosure
 
-We aim to acknowledge reports within 3 business days, triage severity within 7 business days, coordinate disclosure with the reporter, and provide credit unless anonymity is requested.
+We will coordinate remediation and disclosure with the reporter and provide credit unless anonymity is requested. Do not infer a response-time SLA from this repository; organization-level security commitments should be documented and staffed separately.
 
-Good-faith research conducted without privacy violations, data destruction, or service degradation is covered by our safe-harbor intent. If in doubt, contact us before testing against live infrastructure.
+If testing could touch live funds, private data, or service availability, contact us before testing against production infrastructure.

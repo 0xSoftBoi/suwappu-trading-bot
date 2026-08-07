@@ -1,15 +1,19 @@
 {
   "name": "suwappu-trading-bot",
-  "version": "1.1.0",
-  "description": "Outcome-safe price-target managed-swap reference using Suwappu",
+  "version": "2.0.0",
+  "description": "Standalone preview-first price-target workflow with outcome-safe Suwappu managed execution",
+  "private": true,
   "type": "module",
   "bin": { "suwappu-trading-bot": "src/cli.ts" },
   "scripts": {
-    "start": "bun run src/cli.ts",
+    "start": "bun src/cli.ts --once",
+    "watch": "bun src/cli.ts",
     "dev": "bun --watch src/cli.ts",
     "executions": "bun src/cli.ts executions",
     "check": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "bun build src/cli.ts --outdir dist --target bun",
+    "verify": "bun run check && bun test && python -m py_compile bot.py && python -m unittest discover -s tests -p 'test_*.py' -v && bun run build && bun audit --audit-level=high"
   },
   "dependencies": {
     "commander": "12.1.0"

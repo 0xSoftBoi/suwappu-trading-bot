@@ -2,10 +2,9 @@ services:
   bot:
     build: .
     env_file: .env
-    environment:
-      SUWAPPU_TRADING_BOT_STATE_DIR: /data
     volumes:
       - bot-state:/data
+    # Do not put a money-moving command behind an automatic restart policy.
     restart: "no"
 
 volumes:

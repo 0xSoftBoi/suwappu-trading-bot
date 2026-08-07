@@ -1,6 +1,6 @@
 # Suwappu Trading Bot
 
-A small, outcome-safe reference for building a price-triggered product on top of [Suwappu](https://suwappu.bot).
+A standalone, preview-first price-target workflow for building on [Suwappu](https://suwappu.bot). Version 2 keeps the deliberately narrow strategy while hardening the operating boundary around real money.
 
 This repository deliberately solves one narrow problem well: use a cheap reference-price signal, qualify it with a real wallet-aware route, and—only after explicit opt-in—submit a managed swap with durable idempotency and reconcile the final outcome.
 
@@ -15,8 +15,10 @@ This repository deliberately solves one narrow problem well: use a cheap referen
 | Prevent an HTTP success from becoming accidental permission | Require `would_execute === true` from `/swap/simulate` |
 | Survive a timeout after a money-moving request | Persist intent before submit and reuse one `Idempotency-Key` |
 | Avoid duplicate recovery trades | Reconcile known swap IDs before creating a new economic action |
+| Prevent two local workers from moving money concurrently | Exclusive process lock around the managed state machine and reconciliation |
 | Report what really happened | Store terminal status and final amounts separately from quoted amounts |
-| Keep a demo from becoming an unlimited bot | Preview default, two live gates, USDC cap, completed-trade limit |
+| Keep a service from becoming an accidental spend loop | One-shot package/container default, preview default, two live gates, USDC cap, completed-trade limit |
+| Operate it without leaking upstream bodies | Bounded API deadlines plus opt-in metadata-only events |
 
 If you are building a product rather than a demo, continue with [BUILDING_A_PRODUCT.md](BUILDING_A_PRODUCT.md).
 
@@ -33,12 +35,12 @@ Managed mode additionally requires `SUWAPPU_WALLET_ADDRESS`. Use a dedicated wal
 
 ## TypeScript quick start
 
-Requires Bun 1.3.14 or newer.
+Requires Bun 1.3.14 or newer. The repository includes `bun.lock`; use the frozen lockfile in CI/deployments.
 
 ```bash
 git clone https://github.com/0xSoftBoi/suwappu-trading-bot.git
 cd suwappu-trading-bot
-bun install
+bun install --frozen-lockfile
 
 curl -X POST https://api.suwappu.bot/v1/agent/register \
   -H "Content-Type: application/json" \
@@ -46,9 +48,11 @@ curl -X POST https://api.suwappu.bot/v1/agent/register \
 
 export SUWAPPU_API_KEY=suwappu_sk_...
 
-# Preview only. This can read prices and request quotes, but cannot submit.
-bun src/cli.ts --chain base --from USDC --to ETH --amount 25 --target 2000
+# One preview evaluation. This can read prices/request a quote but cannot submit.
+bun src/cli.ts --once --chain base --from USDC --to ETH --amount 25 --target 2000
 ```
+
+`bun run start` is also one-shot and preview-only. Continuous monitoring is an explicit `bun run watch`; managed execution is a separate permission boundary described below.
 
 This reference intentionally uses **USDC as the source token**. That makes the target and client-side cap explicit USD accounting instead of pretending an arbitrary source-token amount is dollars.
 
@@ -101,7 +105,7 @@ An HTTP 2xx simulation response is not an execution signal by itself. `success: 
 
 ### Timeouts are outcome-unknown
 
-If the execute request times out, the connection drops after write, a 5xx is returned, or a successful response is malformed, the bot cannot prove that no transaction occurred. It records `outcome_unknown` and does **not** invent a fresh trade.
+If the execute request times out, the connection drops after write, returns HTTP 408/5xx, or returns a malformed 2xx response, the bot cannot prove that no transaction occurred. It records `outcome_unknown` and does **not** invent a fresh trade.
 
 Recovery keeps the original economic terms and the same idempotency key. If a swap ID is already known, recovery only polls that swap; it does not resubmit.
 
@@ -115,7 +119,9 @@ bun src/cli.ts executions --json
 
 `--reconcile` polls known swap IDs only. It never creates a quote or submits a transaction.
 
-The default journal is `~/.suwappu-trading-bot/execution-journal.json`; override it with `SUWAPPU_TRADING_BOT_STATE_DIR`. Do not delete unresolved journal entries as a retry mechanism. This reference assumes one bot process owns a state directory; add locking or transactional storage before running multiple workers.
+The default journal is `~/.suwappu-trading-bot/execution-journal.json`; override it with `SUWAPPU_TRADING_BOT_STATE_DIR`. Managed mode and `executions --reconcile` take an exclusive `execution.lock`, so one local state directory has one money-moving/reconciling owner. State is written with an atomic rename, file `0600` / directory `0700` permissions, and file `fsync`; malformed state fails closed. Retention only removes already-resolved records and never deletes unresolved idempotency state.
+
+Do not delete an unresolved journal or lock to “fix” a retry. A lock left by a dead process requires an operator to prove that process is gone before removal; see [the operations runbook](docs/OPERATIONS.md). For multiple hosts/replicas, replace the JSON/lock boundary with transactional storage and distributed serialization.
 
 ## Python companion
 
@@ -123,7 +129,7 @@ The default journal is `~/.suwappu-trading-bot/execution-journal.json`; override
 
 ```bash
 export SUWAPPU_API_KEY=suwappu_sk_...
-python bot.py --to-token ETH --amount 25 --target 2000
+python bot.py --once --to-token ETH --amount 25 --target 2000
 ```
 
 It demonstrates the same chain-neutral reference trigger, strict quote parsing, minimum-output + gas guard, TTL check, and USDC cap. `python bot.py --execute` fails closed and points to the TypeScript managed implementation. Keeping one authoritative money-moving state machine is safer than maintaining two subtly different copies.
@@ -138,6 +144,7 @@ It demonstrates the same chain-neutral reference trigger, strict quote parsing, 
 | `--amount` | `100` | USDC per economic action |
 | `--target` | `2000` | Maximum conservative USD acquisition price per output token |
 | `--interval` | `30` | Poll interval in seconds; minimum 10 |
+| `--once` | off | Perform one preview evaluation and exit; cannot be combined with `--execute` |
 | `--execute` | off | Opt into managed execution; still requires the environment gate |
 | `--max-trades` | `1` | Terminal-success swaps this process may account before stopping |
 | `--max-retries` | `5` | Consecutive loop errors before exit |
@@ -153,7 +160,12 @@ Important environment variables:
 | `SUWAPPU_ALLOW_MANAGED_EXECUTION` | Managed only | Must equal `1`, in addition to `--execute` |
 | `SUWAPPU_MAX_TRADE_USDC` | No | Per-action client cap; default `1000` |
 | `SUWAPPU_TRADING_BOT_STATE_DIR` | No | Durable execution-journal directory |
+| `SUWAPPU_TRADING_BOT_JOURNAL_LIMIT` | No | Soft resolved-record retention target; default `5000`, unresolved records are never pruned |
+| `SUWAPPU_OPERATION_TIMEOUT_MS` | No | Per-operation deadline, 100–30000ms; default `25000` |
+| `SUWAPPU_API_EVENTS` | No | `1`/`true` enables metadata-only API timing/outcome events on stderr |
 | `SUWAPPU_API_URL` | No | API base URL override for development |
+
+API events deliberately omit credentials, wallet/market terms, quote/swap IDs, bodies, and error text. They are transport/protocol telemetry—not proof that a managed swap reached a terminal on-chain state.
 
 ## Why a small REST adapter?
 
@@ -168,10 +180,10 @@ This project should not try to become another full trading framework.
 | Project | Best at | What it means for this repo |
 |---|---|---|
 | This repository | Minimal Suwappu signal → quote → simulate → idempotent managed-swap lifecycle | Copy the integration and outcome-safety patterns |
-| [Freqtrade](https://www.freqtrade.io/en/stable/strategy-101/) | Strategy development with backtesting/dry-run; it also documents [stop-loss](https://www.freqtrade.io/en/stable/stoploss/) and [protections](https://www.freqtrade.io/en/stable/plugins/) | Use a deeper strategy framework when you need evidence about entries/exits and risk controls |
-| [Hummingbot Strategy V2](https://hummingbot.org/strategies/v2-strategies/) | Controllers plus Executors that own finite order lifecycles | A useful model once one price-triggered action grows into orchestration across many orders/venues |
+| [Freqtrade](https://www.freqtrade.io/en/stable/backtesting/) | A full bot stack with backtesting/dry-run and documented [protections](https://www.freqtrade.io/en/stable/plugins/) / [lookahead analysis](https://www.freqtrade.io/en/stable/lookahead-analysis/) | Graduate when the hard problem is strategy evidence, entries/exits, and portfolio risk |
+| [Hummingbot Strategy V2](https://hummingbot.org/strategies/v2-strategies/) | A trading framework where [Executors](https://hummingbot.org/strategies/v2-strategies/executors/) own finite order lifecycles | Graduate when one Suwappu economic action becomes multi-order/venue orchestration |
 
-The value of this repository is its small Suwappu-specific boundary: it shows exactly where a signal stops and executable routing, permission, idempotency, and reconciliation begin.
+The value of this repository is its small Suwappu-specific boundary: it shows exactly where a signal stops and executable routing, permission, idempotency, and reconciliation begin. It does **not** claim feature parity with those frameworks or strategy profitability.
 
 ## Docker
 
@@ -181,22 +193,22 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose uses `restart: "no"`, so a one-shot live process is not silently started again after reaching its completed-trade limit. It also mounts a named volume at `/data` and stores the execution journal there. The default container command remains preview-only; entering live mode also requires intentionally adding `--execute` to the command.
+The image runs non-root, mounts durable `/data`, and defaults to exactly one JSON preview evaluation. Compose uses `restart: "no"`, so a money-moving one-shot command cannot be silently restarted. Continuous preview and managed execution require an explicit command override; live mode still requires both `--execute` and `SUWAPPU_ALLOW_MANAGED_EXECUTION=1`.
 
 ## Develop
 
 ```bash
-bun run check
-bun test
-python -m py_compile bot.py
-python -m unittest discover -s tests -p 'test_*.py' -v
+bun run verify
 ```
 
-The regression suite covers the `would_execute` gate, exact idempotency-key reuse after ambiguous failures, known-swap reconciliation without resubmission, terminal final amounts, chain-neutral prices, quote validation, and client-side caps.
+The regression suite covers the `would_execute` gate, exact idempotency-key reuse after ambiguous failures, known-swap reconciliation without resubmission, terminal final amounts, chain-neutral prices, quote binding, local locking/permissions, and client-side caps. CI additionally enforces the frozen dependency graph, standalone build, dependency audit, container build, and CodeQL analysis.
 
 ## Build further
 
 - [Turn this reference into a product](BUILDING_A_PRODUCT.md)
+- [Operate the standalone product](docs/OPERATIONS.md)
+- [Contributing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 - [Suwappu trading-bot guide](https://docs.suwappu.bot/guides/building-a-trading-bot)
 - [Suwappu docs](https://docs.suwappu.bot)
 - [Suwappu SDK source](https://github.com/0xSoftBoi/suwappubot/tree/main/packages/sdk)
