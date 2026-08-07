@@ -1,42 +1,48 @@
 # Security Policy
 
-This repository is a satellite / example application built on the
-[Suwappu API](https://github.com/0xSoftBoi/suwappubot). Some examples can
-initiate real financial transactions when execution is enabled. Treat API keys,
-wallet credentials, and configuration as sensitive.
+This repository is a Suwappu integration reference. The TypeScript entrypoint can submit real managed-wallet swaps only after explicit opt-in; the Python companion is preview-only.
 
-## Reporting a vulnerability
+## Report a vulnerability
 
-**Do not open a public issue for security reports.** Instead:
+Do not open a public issue for a security report. Use GitHub Private Vulnerability Reporting when enabled for this repository, or email **security@suwappu.bot**.
 
-- Use **GitHub Private Vulnerability Reporting** when it is enabled for this repository, or
-- Email **security@suwappu.bot**.
+Include the affected file/version, reproduction steps, and impact. Issues in the Suwappu API, shared SDKs, custody layer, contracts, or core bot should be reported through the [core security policy](https://github.com/0xSoftBoi/suwappubot/security/policy).
 
-Please include the affected file, version or commit, reproduction steps, and an
-impact assessment.
+## Money-moving invariants
 
-**Scope note:** issues in this repository's own code, SDK usage, dependencies,
-or CI belong here. Vulnerabilities in the Suwappu API, core bot, smart
-contracts, custody/key-management layer, or shared SDK should be reported
-upstream through the
-[core security policy](https://github.com/0xSoftBoi/suwappubot/security/policy).
+Changes to managed execution should preserve all of these properties:
 
-## Custody and execution model
+- preview is the default and cannot submit;
+- managed mode requires both `--execute` and `SUWAPPU_ALLOW_MANAGED_EXECUTION=1`;
+- the wallet-aware route must still meet the configured target using minimum output and estimated gas;
+- `/swap/simulate` must explicitly return `would_execute: true`;
+- an intent and idempotency key are durable before submission becomes ambiguous;
+- retries for the same economic action reuse that idempotency key;
+- network/timeout/5xx ambiguity is recorded as `outcome_unknown`, not assumed failure;
+- a known swap ID is reconciled before a new economic action is allowed;
+- `--max-trades` counts terminal success, not request submissions;
+- client-side caps supplement, rather than replace, server-side wallet policies.
 
-Suwappu supports both self-custody and custodial product flows. This satellite
-repository does not make a custody guarantee: behavior depends on the API mode
-and configuration in use. Prefer dry-run or read-only modes where available,
-use test wallets before enabling execution, and never commit credentials.
+Regression tests should accompany any change to these invariants.
 
-## Our commitment
+## Protect the execution journal
 
-- **Acknowledge** reports within 3 business days.
-- **Triage and severity** within 7 business days.
-- **Coordinate disclosure** with the reporter and provide credit unless
-  anonymity is requested.
+By default the TypeScript bot stores `execution-journal.json` under `~/.suwappu-trading-bot`; Docker Compose uses a persistent named volume. The journal is part of the safety boundary: deleting an unresolved idempotency key can turn recovery into a second economic action.
 
-## Safe harbor
+The local journal implementation assumes one writer. Do not point multiple replicas at the same JSON file. Use transactional storage and concurrency controls before horizontal scaling.
 
-Good-faith research conducted under this policy, without privacy violations,
-data destruction, or service degradation, will not result in legal action from
-us. If in doubt, contact us before testing.
+Back up or otherwise durably retain unresolved `submitting`, `submitted`, and `outcome_unknown` records. `executions --reconcile` is safe to automate because it polls known swap IDs only and never submits.
+
+## Credentials and wallets
+
+- Never commit `.env`, API keys, wallet credentials, or private keys.
+- Use the least-privileged Suwappu key and a dedicated wallet for development.
+- Apply restrictive server-side wallet policies and small limits before managed execution.
+- Rotate a credential immediately if it is exposed.
+- Treat logs and support bundles as sensitive when they contain wallet or transaction data.
+
+## Coordinated disclosure
+
+We aim to acknowledge reports within 3 business days, triage severity within 7 business days, coordinate disclosure with the reporter, and provide credit unless anonymity is requested.
+
+Good-faith research conducted without privacy violations, data destruction, or service degradation is covered by our safe-harbor intent. If in doubt, contact us before testing against live infrastructure.

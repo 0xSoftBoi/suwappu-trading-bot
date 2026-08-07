@@ -6,5 +6,6 @@ RUN bun install --production
 
 COPY src ./src
 
+RUN mkdir -p /data && chown bun:bun /data
 USER bun
 CMD ["bun", "run", "src/cli.ts"]

@@ -1,26 +1,39 @@
 # Suwappu Trading Bot
 
-A preview-first price-target trading example for builders using [Suwappu](https://suwappu.bot).
+A small, outcome-safe reference for building a price-triggered product on top of [Suwappu](https://suwappu.bot).
 
-It shows the full managed-wallet safety path: read a real price, obtain a wallet-aware quote, simulate that exact quote, then submit it only after two independent execution opt-ins.
+This repository deliberately solves one narrow problem well: use a cheap reference-price signal, qualify it with a real wallet-aware route, and—only after explicit opt-in—submit a managed swap with durable idempotency and reconcile the final outcome.
 
-> This is an integration example, not financial advice. Use a dedicated wallet, restrictive Suwappu wallet policies, and small amounts while developing.
+> This is an integration reference, not a profitable-strategy claim or financial advice. It does not include backtesting, exits, stop-loss logic, position sizing, portfolio risk, or alpha research.
+
+## What you can learn here
+
+| Builder problem | Pattern in this repo |
+|---|---|
+| Poll cheaply without pretending a price feed is executable liquidity | Chain-neutral `/prices` is a trigger only |
+| Decide whether a route actually meets the target | Wallet-aware `/quote`, minimum output, estimated gas, quote TTL |
+| Prevent an HTTP success from becoming accidental permission | Require `would_execute === true` from `/swap/simulate` |
+| Survive a timeout after a money-moving request | Persist intent before submit and reuse one `Idempotency-Key` |
+| Avoid duplicate recovery trades | Reconcile known swap IDs before creating a new economic action |
+| Report what really happened | Store terminal status and final amounts separately from quoted amounts |
+| Keep a demo from becoming an unlimited bot | Preview default, two live gates, USDC cap, completed-trade limit |
+
+If you are building a product rather than a demo, continue with [BUILDING_A_PRODUCT.md](BUILDING_A_PRODUCT.md).
 
 ## Safe by default
 
-| Mode | How to enter it | Network behavior |
-|---|---|---|
-| Preview | default | prices + quotes only |
-| Managed execution | `--execute` **and** `SUWAPPU_ALLOW_MANAGED_EXECUTION=1` | quote → simulate → managed submit |
-| Self-custody | not implemented by this bot | use Suwappu's unsigned transaction flow instead |
+| Mode | Enter it | Can submit a transaction? |
+|---|---|---:|
+| TypeScript preview | default | No |
+| Python preview | default | No |
+| Managed TypeScript | `--execute` **and** `SUWAPPU_ALLOW_MANAGED_EXECUTION=1` | Yes |
+| Self-custody | not implemented here | No; use Suwappu's unsigned transaction flow |
 
-Live mode also requires `SUWAPPU_WALLET_ADDRESS`. The address is included when the quote is created and is used again for simulation.
-
-A successful simulation is required before `POST /v1/agent/swap/execute` can be called. Managed mode stops after one submitted swap by default; increasing `--max-trades` is an explicit choice.
+Managed mode additionally requires `SUWAPPU_WALLET_ADDRESS`. Use a dedicated wallet and restrictive server-side wallet policies while developing.
 
 ## TypeScript quick start
 
-Requires Bun.
+Requires Bun 1.3.14 or newer.
 
 ```bash
 git clone https://github.com/0xSoftBoi/suwappu-trading-bot.git
@@ -33,15 +46,32 @@ curl -X POST https://api.suwappu.bot/v1/agent/register \
 
 export SUWAPPU_API_KEY=suwappu_sk_...
 
-# Preview only: no transaction can be submitted.
+# Preview only. This can read prices and request quotes, but cannot submit.
 bun src/cli.ts --chain base --from USDC --to ETH --amount 25 --target 2000
 ```
 
-`--amount` is an amount of the **source token**, not a USD amount. `--amount 25 --from USDC` is 25 USDC; `--amount 25 --from ETH` is 25 ETH.
+This reference intentionally uses **USDC as the source token**. That makes the target and client-side cap explicit USD accounting instead of pretending an arbitrary source-token amount is dollars.
 
-## Enabling managed execution
+`SUWAPPU_MAX_TRADE_USDC` defaults to `1000`. A larger `--amount`, a missing/invalid cap, malformed price data, missing gas estimate, stale quote, or route price at/above the target fails closed.
 
-First configure the intended managed wallet and use Suwappu wallet policies to put server-side limits around it. Then opt in at both the environment and command line:
+## Two prices, two jobs
+
+The most important implementation detail is that `/v1/agent/prices` is a **chain-neutral reference feed**. Passing a chain name does not turn it into executable on-chain liquidity.
+
+The bot therefore uses two stages:
+
+1. `GET /prices?symbols=ETH` cheaply decides whether ETH is worth examining.
+2. `POST /quote` asks for the actual chain route and amount. The bot promotes the signal only when the conservative acquisition price is below the target:
+
+```text
+(input USDC + estimated gas USD) / minimum quoted output
+```
+
+The routed platform/route fee is already reflected in routed output; it is retained for attribution rather than subtracted a second time. `amount_out_min`, not optimistic `amount_out`, is the denominator.
+
+## Managed execution
+
+First configure the intended managed wallet and its server-side policies. Then add both independent live gates:
 
 ```bash
 export SUWAPPU_WALLET_ADDRESS=0x...
@@ -57,94 +87,101 @@ bun src/cli.ts \
   --max-trades 1
 ```
 
-When the target is met, the bot:
+For each new economic action, the live path:
 
-1. fetches a current chain-specific USD price;
-2. creates a fresh quote bound to `SUWAPPU_WALLET_ADDRESS`;
-3. calls `/v1/agent/swap/simulate`;
-4. refuses to continue unless the simulation explicitly returns `success: true`;
-5. submits the quote through the managed-wallet `/v1/agent/swap/execute` endpoint;
-6. stops when `--max-trades` submitted swaps have been reached.
+1. qualifies a fresh wallet-aware quote against the target;
+2. writes a durable intent before submission risk begins;
+3. calls `/swap/simulate` and requires **`would_execute: true`**;
+4. persists `submitting` before the network request;
+5. sends the durable intent ID as `Idempotency-Key` to `/swap/execute`;
+6. records the swap ID when known and polls `/swap/status/:id` on later loops;
+7. counts `--max-trades` only when swaps reach terminal success, using final amounts when available.
 
-A missing, zero, negative, or malformed price is an error—never a buy signal.
+An HTTP 2xx simulation response is not an execution signal by itself. `success: true, would_execute: false` still blocks the swap.
 
-## Python version
+### Timeouts are outcome-unknown
 
-The Python example follows the same current REST contract and safety gates.
+If the execute request times out, the connection drops after write, a 5xx is returned, or a successful response is malformed, the bot cannot prove that no transaction occurred. It records `outcome_unknown` and does **not** invent a fresh trade.
+
+Recovery keeps the original economic terms and the same idempotency key. If a swap ID is already known, recovery only polls that swap; it does not resubmit.
+
+Inspect the journal at any time:
 
 ```bash
-python -m pip install requests
-export SUWAPPU_API_KEY=suwappu_sk_...
-
-# Preview
-python bot.py --to-token ETH --amount 25 --target 2000
-
-# Managed execution uses the same two extra environment variables.
-python bot.py --to-token ETH --amount 25 --target 2000 --execute
+bun src/cli.ts executions
+bun src/cli.ts executions --reconcile
+bun src/cli.ts executions --json
 ```
 
-The Suwappu Python SDK source is newer than the published package surface and is not currently distributed on PyPI, so this small Python example intentionally uses the REST API directly.
+`--reconcile` polls known swap IDs only. It never creates a quote or submits a transaction.
+
+The default journal is `~/.suwappu-trading-bot/execution-journal.json`; override it with `SUWAPPU_TRADING_BOT_STATE_DIR`. Do not delete unresolved journal entries as a retry mechanism. This reference assumes one bot process owns a state directory; add locking or transactional storage before running multiple workers.
+
+## Python companion
+
+`bot.py` is intentionally preview-only and uses only the Python standard library:
+
+```bash
+export SUWAPPU_API_KEY=suwappu_sk_...
+python bot.py --to-token ETH --amount 25 --target 2000
+```
+
+It demonstrates the same chain-neutral reference trigger, strict quote parsing, minimum-output + gas guard, TTL check, and USDC cap. `python bot.py --execute` fails closed and points to the TypeScript managed implementation. Keeping one authoritative money-moving state machine is safer than maintaining two subtly different copies.
 
 ## Options
 
-| Flag | Default | Meaning |
+| TypeScript flag | Default | Meaning |
 |---|---:|---|
-| `--chain` | `base` | Chain to trade on |
-| `--from` / `--from-token` | `USDC` | Source token |
-| `--to` / `--to-token` | `ETH` | Token to buy |
-| `--amount` | `100` | Source-token amount per trade |
-| `--target` | `2000` | Buy only below this USD price |
-| `--interval` | `30` | Price polling interval in seconds (minimum 10) |
-| `--execute` | off | Opt into managed execution |
-| `--max-trades` | `1` | Stop after this many managed swap submissions |
-| `--max-retries` | `5` | Stop after this many consecutive errors |
-| `--json` | off | Emit one JSON object per check on stdout |
-| `--dry-run` | — | Deprecated compatibility flag; preview is already default |
+| `--chain` | `base` | Chain used for the executable quote |
+| `--from` | `USDC` | Source accounting token; only USDC is accepted here |
+| `--to` | `ETH` | Token to acquire |
+| `--amount` | `100` | USDC per economic action |
+| `--target` | `2000` | Maximum conservative USD acquisition price per output token |
+| `--interval` | `30` | Poll interval in seconds; minimum 10 |
+| `--execute` | off | Opt into managed execution; still requires the environment gate |
+| `--max-trades` | `1` | Terminal-success swaps this process may account before stopping |
+| `--max-retries` | `5` | Consecutive loop errors before exit |
+| `--json` | off | Emit machine-readable JSON lines |
+| `--dry-run` | — | Deprecated compatibility flag; preview is already the default |
 
-## Why this example uses a small REST bridge
-
-The currently published npm package is `@suwappu/sdk@0.4.0`. The Suwappu repository already contains a newer 0.6 TypeScript SDK surface with current prices, wallet-aware quotes, simulation, swap status/history, wallet policies, and the corrected split between managed and self-custody execution.
-
-This repository does not pretend that unpublished source is on npm. `src/suwappu.ts` is a small typed adapter over today's production endpoints. Once the newer SDK is published, its intended managed flow is the same:
-
-```text
-getQuote({ ..., walletAddress })
-  → simulateSwap({ quoteId, walletAddress })
-  → swap(quote)                  # managed execution
-```
-
-For self-custody, use `prepareSwap({ quoteId, walletAddress })` in the newer SDK source; it returns an unsigned transaction for the caller to sign. The hosted MCP endpoint (`https://api.suwappu.bot/mcp`) also exposes an `execute_swap` tool whose result is unsigned/self-custody—it is not the managed execution endpoint used by this bot.
-
-That distinction is important when you build agent tooling: “prepare an unsigned transaction” and “submit a managed-wallet transaction” should never share an implicit permission boundary.
-
-## Environment
+Important environment variables:
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `SUWAPPU_API_KEY` | Yes | Authenticates the agent |
-| `SUWAPPU_WALLET_ADDRESS` | Live mode | Wallet bound to the quote and simulation |
-| `SUWAPPU_ALLOW_MANAGED_EXECUTION` | Live mode | Must equal `1` in addition to `--execute` |
-| `SUWAPPU_API_URL` | No | Override the API base URL for development |
+| `SUWAPPU_API_KEY` | Yes | Agent authentication |
+| `SUWAPPU_WALLET_ADDRESS` | Managed only | Binds the route and simulation to the intended wallet |
+| `SUWAPPU_ALLOW_MANAGED_EXECUTION` | Managed only | Must equal `1`, in addition to `--execute` |
+| `SUWAPPU_MAX_TRADE_USDC` | No | Per-action client cap; default `1000` |
+| `SUWAPPU_TRADING_BOT_STATE_DIR` | No | Durable execution-journal directory |
+| `SUWAPPU_API_URL` | No | API base URL override for development |
 
-## JSON mode
+## Why a small REST adapter?
 
-Stdout stays machine-readable:
+`src/suwappu.ts` is a typed adapter over the production contracts this example needs: prices, wallet-aware quote, simulation, managed execute, and status. It keeps this reference honest about the API surface it actually runs against instead of assuming a locally newer SDK has already been published everywhere.
 
-```json
-{"token":"ETH","chain":"base","price":1995.88,"target":2000,"action":"would_buy","quote":{"id":"quote_...","fromAmount":"25","fromToken":"USDC","toAmount":"0.0125","toToken":"ETH","dex":"auto"}}
-```
+The permission distinction matters for agent tooling: Suwappu's hosted MCP `execute_swap` flow prepares an unsigned/self-custody transaction; this bot's explicit `/swap/execute` path is managed execution. “Prepare for the caller to sign” and “submit from a managed wallet” should never share an implicit permission boundary.
 
-Operational errors go to stderr.
+## How this stacks up
+
+This project should not try to become another full trading framework.
+
+| Project | Best at | What it means for this repo |
+|---|---|---|
+| This repository | Minimal Suwappu signal → quote → simulate → idempotent managed-swap lifecycle | Copy the integration and outcome-safety patterns |
+| [Freqtrade](https://www.freqtrade.io/en/stable/strategy-101/) | Strategy development with backtesting/dry-run; it also documents [stop-loss](https://www.freqtrade.io/en/stable/stoploss/) and [protections](https://www.freqtrade.io/en/stable/plugins/) | Use a deeper strategy framework when you need evidence about entries/exits and risk controls |
+| [Hummingbot Strategy V2](https://hummingbot.org/strategies/v2-strategies/) | Controllers plus Executors that own finite order lifecycles | A useful model once one price-triggered action grows into orchestration across many orders/venues |
+
+The value of this repository is its small Suwappu-specific boundary: it shows exactly where a signal stops and executable routing, permission, idempotency, and reconciliation begin.
 
 ## Docker
 
 ```bash
 cp .env.example .env
-# Keep SUWAPPU_ALLOW_MANAGED_EXECUTION=0 for preview mode.
+# Leave SUWAPPU_ALLOW_MANAGED_EXECUTION=0 for preview.
 docker compose up --build
 ```
 
-The default container command is preview-only. Do not set the managed execution opt-in until you also intentionally change the container command to include `--execute`.
+Compose uses `restart: "no"`, so a one-shot live process is not silently started again after reaching its completed-trade limit. It also mounts a named volume at `/data` and stores the execution journal there. The default container command remains preview-only; entering live mode also requires intentionally adding `--execute` to the command.
 
 ## Develop
 
@@ -152,19 +189,21 @@ The default container command is preview-only. Do not set the managed execution 
 bun run check
 bun test
 python -m py_compile bot.py
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-Regression tests specifically cover the zero-price failure case and the managed-execution gate.
+The regression suite covers the `would_execute` gate, exact idempotency-key reuse after ambiguous failures, known-swap reconciliation without resubmission, terminal final amounts, chain-neutral prices, quote validation, and client-side caps.
 
 ## Build further
 
+- [Turn this reference into a product](BUILDING_A_PRODUCT.md)
+- [Suwappu trading-bot guide](https://docs.suwappu.bot/guides/building-a-trading-bot)
 - [Suwappu docs](https://docs.suwappu.bot)
-- [Trading bot guide](https://docs.suwappu.bot/guides/building-a-trading-bot)
 - [Suwappu SDK source](https://github.com/0xSoftBoi/suwappubot/tree/main/packages/sdk)
-- [Python SDK source](https://github.com/0xSoftBoi/suwappubot/tree/main/packages/sdk-python)
+- [Suwappu Python SDK source](https://github.com/0xSoftBoi/suwappubot/tree/main/packages/sdk-python)
 - [API reference](https://api.suwappu.bot/v1/agent/openapi)
 
-Suwappu currently supports 14 chains; use the chain/token discovery APIs rather than hard-coding a provider count.
+Use Suwappu's chain/token discovery surfaces instead of hard-coding a provider or chain count that will go stale.
 
 ## License
 

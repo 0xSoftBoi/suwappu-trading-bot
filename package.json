@@ -1,21 +1,22 @@
 {
   "name": "suwappu-trading-bot",
-  "version": "1.0.0",
-  "description": "Preview-first price-target trading bot example using Suwappu",
+  "version": "1.1.0",
+  "description": "Outcome-safe price-target managed-swap reference using Suwappu",
   "type": "module",
   "bin": { "suwappu-trading-bot": "src/cli.ts" },
   "scripts": {
     "start": "bun run src/cli.ts",
     "dev": "bun --watch src/cli.ts",
+    "executions": "bun src/cli.ts executions",
     "check": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
-    "commander": "^12.0.0"
+    "commander": "12.1.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.14",
-    "typescript": "^5.0.0"
+    "@types/bun": "1.3.14",
+    "typescript": "5.9.3"
   },
   "engines": { "bun": ">=1.3.14" },
   "packageManager": "bun@1.3.14",

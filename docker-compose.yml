@@ -2,4 +2,11 @@ services:
   bot:
     build: .
     env_file: .env
-    restart: unless-stopped
+    environment:
+      SUWAPPU_TRADING_BOT_STATE_DIR: /data
+    volumes:
+      - bot-state:/data
+    restart: "no"
+
+volumes:
+  bot-state:
